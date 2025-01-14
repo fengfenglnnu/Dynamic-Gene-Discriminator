@@ -1,0 +1,1 @@
+Dynamic Gene Discriminator (DGD), a tool that predictes the expression dynamics of lincRNA and coding genes in cereal grains. 

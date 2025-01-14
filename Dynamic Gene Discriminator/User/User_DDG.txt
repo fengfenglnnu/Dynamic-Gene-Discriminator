@@ -1,0 +1,39 @@
+# 0. Set the Working Directory
+setwd("##")
+
+install.packages("#")
+
+library(xgboost)
+library(data.table)
+library(readxl)
+library(openxlsx)
+library(caret)
+library(ggplot2)
+library(pROC)
+
+# 1. Load the Trained Model and Associated Information (Select the Model Based on Different Requirements)
+model_info <- readRDS("#_manual_training_process_info.rds")
+final_model <- xgb.load("#_xgboost_model_manual.model")
+
+# 2. Read the Data and Extract Features
+# Replace with the User's Folder Name
+user_data <- read_excel("user_set.xlsx")
+user_data <- as.data.table(user_data)
+
+# 3. Extract the Feature Matrix
+user_features <- user_data[, .(Length, `GC content`, Exon, AS, NonAS, TE, NonTE, Conserved, NonConserved, Coding, NonCoding)]
+duser <- xgb.DMatrix(data = as.matrix(user_features))
+
+# 4. Make Predictions on the Test Set Using the Trained Model
+user_predictions <- predict(final_model, duser)
+
+# 5. Convert Probability Values to Classes (Select Thresholds Based on Different Species = t)
+predicted_classes <- ifelse(user_predictions > t, "Dy", "NonDy")
+
+# 6. Prediction
+user_data[, Prediction := predicted_classes]
+
+# 7. Save the Prediction Results to an Excel File
+write.xlsx(user_data, "User_prediction_results.xlsx")
+print("Saved User_prediction_results.xlsx")
+

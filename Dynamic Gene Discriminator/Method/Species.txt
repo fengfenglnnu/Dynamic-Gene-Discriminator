@@ -1,0 +1,8 @@
+Maize	Zm
+Foxtail millet	Si
+Wheat	Ta
+Barely	Hv
+Oat	As
+Rice	Os
+Pharus latifolius	Pl
+Titicum urartu	Tu

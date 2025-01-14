@@ -1,0 +1,224 @@
+#Part_1
+# Set the Working Directory
+setwd("##")
+
+install.packages("#")
+
+library(xgboost)
+library(data.table)
+library(readxl)
+library(openxlsx)
+library(caret)
+library(ggplot2)
+library(pROC)
+
+train_data <- read_excel("train_set.xlsx")
+train_data <- as.data.table(train_data)
+
+train_data[, Class_numeric := as.numeric(factor(Class, levels = c("NonDy", "Dy"))) - 1]
+
+# Split the Data into Training and Validation Sets (80% Training, 20% Validation)
+set.seed(1)
+train_index <- createDataPartition(train_data$Class_numeric, p = 0.8, list = FALSE)
+train_set <- train_data[train_index]
+valid_set <- train_data[-train_index]
+
+train_features <- train_set[, .(Length, `GC content`, Exon, AS, NonAS, TE, NonTE, Conserved, NonConserved, Coding, NonCoding)]
+train_label <- train_set$Class_numeric
+valid_features <- valid_set[, .(Length, `GC content`, Exon, AS, NonAS, TE, NonTE, Conserved, NonConserved, Coding, NonCoding)]
+valid_label <- valid_set$Class_numeric
+
+dtrain <- xgb.DMatrix(data = as.matrix(train_features), label = train_label)
+dvalid <- xgb.DMatrix(data = as.matrix(valid_features), label = valid_label)
+
+#Use the Optimal Hyperparameter Configuration from 5-Fold Cross-Validation
+params <- list(
+  eta = 0.001,
+  max_depth = 7,
+  gamma = 0.3,
+  colsample_bytree = 0.7,
+  min_child_weight = 5,
+  subsample = 0.5,
+  objective = "binary:logistic",
+  eval_metric = "logloss"
+)
+
+watchlist <- list(train = dtrain, valid = dvalid)
+
+# Train using XGBoost with nrounds = 10000 and Monitor Validation Error
+final_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 10000,
+  watchlist = watchlist,
+  print_every_n = 10,
+  maximize = FALSE,
+  verbose = 1
+)
+
+evaluation_log <- data.frame(final_model$evaluation_log)
+ggplot(evaluation_log, aes(x = iter)) +
+  geom_line(aes(y = train_logloss, color = "Train")) +
+  geom_line(aes(y = valid_logloss, color = "Validation")) +
+  labs(title = "Training and Validation Error over Iterations",
+       x = "Number of Rounds",
+       y = "Logloss") +
+  scale_color_manual(values = c("Train" = "blue", "Validation" = "red")) +
+  theme_minimal()
+
+#Train Using XGBoost with Early Stopping and Monitor Validation Error
+final_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 10000,
+  watchlist = watchlist,
+  early_stopping_rounds = 10,
+  print_every_n = 10, 
+  maximize = FALSE,
+  verbose = 1
+)
+
+# Obtain the Best Number of Iterations (Optimal Point for Generalization)
+best_nrounds <- final_model$best_iteration
+cat("Best Number of Iteration:", best_nrounds, "\n")
+
+evaluation_log <- data.frame(final_model$evaluation_log)
+ggplot(evaluation_log, aes(x = iter)) +
+  geom_line(aes(y = train_logloss, color = "Train")) +
+  geom_line(aes(y = valid_logloss, color = "Validation")) +
+  labs(title = "Training and Validation Error over Iterations",
+       x = "Number of Rounds",
+       y = "Logloss") +
+  scale_color_manual(values = c("Train" = "blue", "Validation" = "red")) +
+  theme_minimal()
+
+# Save the Model and Training Process Information
+xgb.save(final_model, "xgboost_model_manual.model")
+saveRDS(final_model, "manual_training_process_info.rds")
+
+importance_matrix <- xgb.importance(model = final_model)
+xgb.plot.importance(importance_matrix, main = "Feature Importance")
+write.xlsx(as.data.frame(importance_matrix), "manual_feature_importance.xlsx")
+
+#Part_2
+# Read the Test Set Data and Extract Features
+test_data <- read_excel("test_set.xlsx")
+test_data <- as.data.table(test_data)
+test_features <- test_data[, .(Length, `GC content`, Exon, AS, NonAS, TE, NonTE, Conserved, NonConserved, Coding, NonCoding)]
+dtest <- xgb.DMatrix(data = as.matrix(test_features))
+
+# Use the Trained Model to Make Predictions on the Test Set
+test_predictions <- predict(final_model, dtest)
+
+
+#Convert Probability Values to Classes (Using 0.5 as the Threshold)
+predicted_classes <- ifelse(test_predictions > 0.5, "Dy", "NonDy")
+
+test_data[, Prediction := predicted_classes]
+write.xlsx(test_data, "manual_test_prediction_results.xlsx")
+
+calculate_metrics <- function(predictions, actuals) {
+  all_levels <- union(levels(as.factor(predictions)), levels(as.factor(actuals)))
+  predictions <- factor(predictions, levels = all_levels)
+  actuals <- factor(actuals, levels = all_levels)
+  
+  conf_matrix <- confusionMatrix(predictions, actuals)
+  
+  sensitivity <- conf_matrix$byClass["Sensitivity"]
+  specificity <- conf_matrix$byClass["Specificity"]
+  precision <- conf_matrix$byClass["Precision"]
+  accuracy <- conf_matrix$overall["Accuracy"]
+  f1_score <- conf_matrix$byClass["F1"]
+  
+  return(data.frame(
+    Metric = c("Sensitivity", "Specificity", "Precision", "Accuracy", "F1-Score"),
+    Value = c(sensitivity, specificity, precision, accuracy, f1_score)
+  ))
+}
+
+true_labels <- test_data$Class
+
+metrics_our <- calculate_metrics(test_data$Prediction, true_labels)
+
+roc_obj <- roc(true_labels, test_predictions, levels = c("NonDy", "Dy"), direction = "<")
+
+auc_value <- auc(roc_obj)
+cat("AUC:", auc_value, "\n")
+
+plot(roc_obj, main = "ROC Curve", col = "blue", lwd = 2)
+
+#Save Classification Metrics and AUC Results to an Excel File
+result_data <- data.frame(
+  Metric = c("Sensitivity", "Specificity", "Precision", "Accuracy", "F1-Score", "AUC"),
+  Value = c(
+    metrics_our[metrics_our$Metric == "Sensitivity", "Value"],
+    metrics_our[metrics_our$Metric == "Specificity", "Value"],
+    metrics_our[metrics_our$Metric == "Precision", "Value"],
+    metrics_our[metrics_our$Metric == "Accuracy", "Value"],
+    metrics_our[metrics_our$Metric == "F1-Score", "Value"],
+    auc_value
+  )
+)
+
+write.xlsx(result_data, "Result.xlsx", rowNames = FALSE)
+
+#Part_3
+#After completing all the previous steps, finally perform the correction for "Convert Probability Values to Classes."
+# Compute the Function of Sensitivity and Specificity as a Function of the Threshold for test_predictions
+calculate_sensitivity_specificity <- function(predictions, actuals) {
+  thresholds <- seq(0, 1, by = 0.01)
+  sensitivities <- numeric(length(thresholds))
+  specificities <- numeric(length(thresholds))
+  
+  for (i in seq_along(thresholds)) {
+    threshold <- thresholds[i]
+    predicted_classes <- ifelse(predictions > threshold, "Dy", "NonDy")
+    
+    conf_matrix <- confusionMatrix(factor(predicted_classes, levels = c("NonDy", "Dy")),
+                                   factor(actuals, levels = c("NonDy", "Dy")))
+    
+    sensitivities[i] <- conf_matrix$byClass["Sensitivity"]
+    specificities[i] <- conf_matrix$byClass["Specificity"]
+  }
+  
+  return(data.frame(Threshold = thresholds, Sensitivity = sensitivities, Specificity = specificities))
+}
+
+sensitivity_specificity_data <- calculate_sensitivity_specificity(test_predictions, true_labels)
+
+sensitivity_specificity_data$Difference <- abs(sensitivity_specificity_data$Sensitivity - sensitivity_specificity_data$Specificity)
+
+min_diff_index <- which.min(sensitivity_specificity_data$Difference)
+intersection_threshold <- sensitivity_specificity_data$Threshold[min_diff_index]
+
+#Obtain the Sensitivity and Specificity Values at the Intersection Point
+intersection_sensitivity <- sensitivity_specificity_data$Sensitivity[min_diff_index]
+intersection_specificity <- sensitivity_specificity_data$Specificity[min_diff_index]
+
+ggplot(sensitivity_specificity_data, aes(x = Threshold)) +
+  geom_line(aes(y = Sensitivity, color = "Sensitivity"), linewidth = 1.2) +
+  geom_line(aes(y = Specificity, color = "Specificity"), linewidth = 1.2) +
+  annotate("point", x = intersection_threshold, y = intersection_sensitivity, color = "purple", size = 4) +  
+  annotate("text", x = intersection_threshold, y = intersection_sensitivity, 
+           label = paste0("Threshold: ", round(intersection_threshold, 2)), vjust = -1.5, hjust = 1) +  
+  scale_color_manual(values = c("Sensitivity" = "blue", "Specificity" = "red")) +
+  labs(title = "Sensitivity and Specificity vs Threshold",
+       x = "Threshold",
+       y = "Value") +
+  theme_minimal() +
+  theme(
+    legend.title = element_blank(),
+    legend.position = c(0.8, 0.8),  
+    legend.background = element_rect(fill = alpha('white', 0.5)),  
+    panel.background = element_blank(),  
+    panel.border = element_rect(color = "black", fill = NA, size = 1),  
+    axis.ticks = element_line(color = "black"),  
+    axis.text = element_text(color = "black"),  
+    axis.title = element_text(color = "black"),  
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank()   
+  ) +
+  geom_vline(xintercept = intersection_threshold, linetype = "dashed", color = "gray") 
+
+#Replace the Threshold Value at the Intersection Point with the test_predictions in "Convert Probability Values to Classes" in Part 2
+
